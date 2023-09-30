@@ -1,0 +1,14 @@
+stages:
+  - module-pipelines
+
+backend:
+  stage: module-pipelines
+  trigger:
+    include:
+      - local: 'backend/backend.yml'
+    strategy: depend 
+  only:
+      changes:
+        - backend/*
+
+

@@ -1,0 +1,121 @@
+stages:
+  - build
+  - test
+  - release
+  - notify
+  - deploy
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - project: 'templates/ci'
+    file: 'DockerInDockerTemplate.yml'
+
+build-backend:
+  stage: build
+  image:
+    name: "gcr.io/kaniko-project/executor:debug"
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(echo -n ${CI_REGISTRY_USER}:${CI_REGISTRY_PASSWORD} | base64)\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor --cache-repo=$CI_REGISTRY_IMAGE/momo-backend/cache --cache=true --context "${CI_PROJECT_DIR}/backend" --dockerfile "${CI_PROJECT_DIR}/backend/dockerfile" --destination "$CI_REGISTRY_IMAGE/momo-backend:$CI_COMMIT_SHA" --registry-mirror mirror.gcr.io --registry-mirror index.docker.io
+
+unit-tests:
+  stage: test
+  image: golang:1.17
+  script:
+    - cd backend
+    - go test -v ./...
+
+spotbugs-sast:
+  stage: test
+  rules:
+    - when: never
+
+gosec-sast:
+  stage: test
+  rules:
+    - when: never
+
+eslint-sast:
+  stage: test
+  rules:
+    - when: never
+
+bandit-sast:
+  stage: test
+  rules:
+    - when: never
+
+nodejs-scan-sast:
+  stage: test
+  rules:
+    - when: never
+
+postman-backend:
+  stage: test
+  image: docker:20.10.12-dind-rootless
+  before_script:
+    - until docker info; do sleep 1; done
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker network create -d bridge momo_network_test
+  script:
+    - docker run -d --name backend --network=momo_network_test -p 0.0.0.0:8081:8081 $CI_REGISTRY_IMAGE/momo-backend:$CI_COMMIT_SHA
+    - sleep 15
+    - docker run --network=momo_network_test -v ${CI_PROJECT_DIR}/backend/newman:/etc/newman -t postman/newman run collection.json
+    - docker stop $(docker ps -a -q) && docker rm $(docker ps -a -q)
+
+sonarqube-backend-sast:
+  stage: test
+  image: sonarsource/sonar-scanner-cli:latest
+  script:
+    - cd backend
+    - >
+      sonar-scanner -Dsonar.qualitygate.wait=true
+      -Dsonar.projectKey=${SONAR_PROJECT_KEY}
+      -Dsonar.sources=.
+      -Dsonar.host.url=${SONAR_URL}
+      -Dsonar.login=${SONAR_LOGIN}
+      -Dsonar.projectName=${SONAR_BACKEND_NAME}
+
+upload-backend-latest:
+  variables:
+    GIT_STRATEGY: none
+  image: docker:20.10.12-dind-rootless
+  stage: release
+  before_script:
+    - until docker info; do sleep 1; done
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker pull $CI_REGISTRY_IMAGE/momo-backend:$CI_COMMIT_SHA
+    - docker tag $CI_REGISTRY_IMAGE/momo-backend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/momo-backend:latest
+    - docker push $CI_REGISTRY_IMAGE/momo-backend:latest
+
+telegram-notification-backend:
+  variables:
+    GIT_STRATEGY: none
+  stage: notify
+  before_script:
+  - apk add curl
+  script:
+    - 'curl -s -X POST -H "Content-Type: application/json" -d "{\"chat_id\": \"${chat_id}\", \"text\": \"Вышла новая версия backend пельменной — ${VERSION}. Собран новый Docker-образ — $CI_REGISTRY_IMAGE/momo-backend:$CI_COMMIT_SHA\"}"  https://api.telegram.org/bot${token}/sendMessage '
+
+deploy-backend:
+  variables:
+    GIT_STRATEGY: none
+  stage: deploy
+  image: docker:20.10.12-dind
+  before_script:
+  - apk add openssh-client bash
+  - eval $(ssh-agent -s)
+  - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  - mkdir -p ~/.ssh
+  - chmod 600 ~/.ssh
+  - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+  - chmod 644 ~/.ssh/known_hosts
+  script:
+    - export DOCKER_HOST="ssh://${DEV_USER}@${DEV_HOST}"
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - set +e && docker network create -d bridge momo_network || true
+    - docker rm -f momo-backend || true
+    - set -e && docker run -d --name momo-backend --network=momo_network --restart always --pull always ${CI_REGISTRY_IMAGE}/momo-backend:latest
