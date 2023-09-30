@@ -1,0 +1,17 @@
+# build
+FROM golang:1.17-alpine as builder
+WORKDIR /build
+COPY go.mod .
+RUN go mod download
+COPY . .
+RUN go build -o /main /build/cmd/api/main.go /build/cmd/api/router.go
+
+# release
+FROM alpine:3.18.3
+WORKDIR /app
+COPY --from=builder /main .
+RUN addgroup --system golanguser \
+    && adduser --system --shell /bin/false --no-create-home --ingroup golanguser golanguser && chown -R golanguser:golanguser /app
+USER golanguser
+EXPOSE 8081
+ENTRYPOINT ["/app/main"]
