@@ -1,0 +1,80 @@
+stages:
+  - build
+  - test
+  - release
+  - notify
+  - deploy
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - project: 'templates/ci'
+    file: 'DockerInDockerTemplate.yml'
+
+variables:
+  SAST_EXCLUDED_ANALYZERS: "gosec,bandit,eslint,brakeman,flawfinder,kubesec,mobsf,phpcs-security-audit,pmd-apex,security-code-scan,sobelow,spotbugs"
+
+build-frontend:
+  stage: build
+  image:
+    name: "gcr.io/kaniko-project/executor:debug"
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(echo -n ${CI_REGISTRY_USER}:${CI_REGISTRY_PASSWORD} | base64)\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor --cache-repo=$CI_REGISTRY_IMAGE/momo-frontend/cache --cache=true --context "${CI_PROJECT_DIR}/frontend" --dockerfile "${CI_PROJECT_DIR}/frontend/dockerfile" --destination "$CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA" --registry-mirror mirror.gcr.io --registry-mirror index.docker.io
+
+sonarqube-frontend-sast:
+  stage: test
+  image: sonarsource/sonar-scanner-cli:latest
+  script:
+    - cd frontend
+    - >
+      sonar-scanner -Dsonar.qualitygate.wait=true
+      -Dsonar.projectKey=${SONAR_F_PROJECT_KEY}
+      -Dsonar.sources=.
+      -Dsonar.host.url=${SONAR_URL}
+      -Dsonar.login=${SONAR_F_LOGIN}
+      -Dsonar.projectName=${SONAR_FRONTEND_NAME}
+  allow_failure: true
+
+upload-frontend-latest:
+  variables:
+    GIT_STRATEGY: none
+  image: docker:20.10.12-dind-rootless
+  stage: release
+  before_script:
+    - until docker info; do sleep 1; done
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker pull $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA
+    - docker tag $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/momo-frontend:latest
+    - docker push $CI_REGISTRY_IMAGE/momo-frontend:latest
+
+telegram-notification-frontend:
+  variables:
+    GIT_STRATEGY: none
+  stage: notify
+  before_script:
+  - apk add curl
+  script:
+    - 'curl -s -X POST -H "Content-Type: application/json" -d "{\"chat_id\": \"${chat_id}\", \"text\": \"Вышла новая версия frontend пельменной — ${VERSION}. Собран новый Docker-образ — $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA\"}"  https://api.telegram.org/bot${token}/sendMessage '
+
+deploy-frontend:
+  variables:
+    GIT_STRATEGY: none
+  stage: deploy
+  image: docker:20.10.12-dind
+  before_script:
+  - apk add openssh-client bash
+  - eval $(ssh-agent -s)
+  - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  - mkdir -p ~/.ssh
+  - chmod 600 ~/.ssh
+  - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+  - chmod 644 ~/.ssh/known_hosts
+  script:
+    - export DOCKER_HOST="ssh://${DEV_USER}@${DEV_HOST}"
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - set +e && docker network create -d bridge momo_network || true
+    - docker rm -f momo-frontend || true
+    - set -e && docker run -d -p 8080:8080 --name momo-frontend --network=momo_network --restart always --pull always ${CI_REGISTRY_IMAGE}/momo-frontend:latest
