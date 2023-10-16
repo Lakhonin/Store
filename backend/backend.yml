@@ -121,6 +121,7 @@ telegram-notification-backend:
 deploy-backend: 
   variables: 
     GIT_STRATEGY: none
+    VERSION: $CI_COMMIT_TAG
   stage: deploy 
   trigger: std-016-026/infra
   rules:
