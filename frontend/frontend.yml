@@ -50,6 +50,21 @@ upload-frontend-latest:
     - docker tag $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/momo-frontend:latest
     - docker push $CI_REGISTRY_IMAGE/momo-frontend:latest
 
+upload-frontend-release:
+  variables:
+    GIT_STRATEGY: none
+  image: docker:20.10.12-dind-rootless
+  stage: release
+  before_script:
+    - until docker info; do sleep 1; done
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker pull $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA
+    - docker tag $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_TAG
+    - docker push $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_TAG
+  rules:
+    - if: $CI_COMMIT_TAG
+
 telegram-notification-frontend:
   variables:
     GIT_STRATEGY: none
@@ -59,22 +74,10 @@ telegram-notification-frontend:
   script:
     - 'curl -s -X POST -H "Content-Type: application/json" -d "{\"chat_id\": \"${chat_id}\", \"text\": \"Вышла новая версия frontend пельменной — ${VERSION}. Собран новый Docker-образ — $CI_REGISTRY_IMAGE/momo-frontend:$CI_COMMIT_SHA\"}"  https://api.telegram.org/bot${token}/sendMessage '
 
-deploy-frontend:
-  variables:
+deploy-frontend: 
+  variables: 
     GIT_STRATEGY: none
-  stage: deploy
-  image: docker:20.10.12-dind
-  before_script:
-  - apk add openssh-client bash
-  - eval $(ssh-agent -s)
-  - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
-  - mkdir -p ~/.ssh
-  - chmod 600 ~/.ssh
-  - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
-  - chmod 644 ~/.ssh/known_hosts
-  script:
-    - export DOCKER_HOST="ssh://${DEV_USER}@${DEV_HOST}"
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-    - set +e && docker network create -d bridge momo_network || true
-    - docker rm -f momo-frontend || true
-    - set -e && docker run -d -p 8080:8080 --name momo-frontend --network=momo_network --restart always --pull always ${CI_REGISTRY_IMAGE}/momo-frontend:latest
+  stage: deploy 
+  trigger: std-016-026/infra
+  rules:
+    - if: $CI_COMMIT_TAG
