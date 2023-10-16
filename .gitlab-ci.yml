@@ -23,9 +23,6 @@ frontend:
         - frontend/*
 
 deploy: 
-  environment:
-    name: prod
-    url: https://momo.commerce-store.ru
   variables: 
     GIT_STRATEGY: none
     VERSION: $CI_COMMIT_TAG
